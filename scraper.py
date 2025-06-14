@@ -123,45 +123,81 @@ def parsear_vista_mapa(html_content):
             continue
     return propiedades_pagina
 
-def scrape_url(url, driver, wait):
+def scrape_url(url, driver, wait, max_retries=2):
+    """
+    Scraper robusto que navega una URL, con reintentos y esperas inteligentes.
+    """
     print(f"\n>>>> Iniciando scraping para la URL: {url[:80]}...")
-    driver.get(url)
-    try:
-        WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Entendido')]"))).click()
-        print("Banner de cookies cerrado.")
-    except TimeoutException:
-        print("No se encontró el banner de cookies, continuando...")
     
-    todas_las_propiedades_de_url = []
-    pagina_actual = 1
-    while True:
-        print(f"--- Procesando Página {pagina_actual} ---")
+    for attempt in range(max_retries):
         try:
-            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "ui-search-map-list__item")))
-            time.sleep(3)
-        except TimeoutException:
-            print("No se encontraron más resultados en esta página. Finalizando esta URL.")
-            break
-        
-        propiedades_de_esta_pagina = parsear_vista_mapa(driver.page_source)
-        links_ya_guardados = {p['link'] for p in todas_las_propiedades_de_url}
-        nuevas_propiedades = [p for p in propiedades_de_esta_pagina if p.get('link') not in links_ya_guardados]
-        if not nuevas_propiedades and pagina_actual > 1:
-             print("No se encontraron propiedades nuevas. Finalizando esta URL.")
-             break
-        todas_las_propiedades_de_url.extend(nuevas_propiedades)
-        print(f"Extraídas {len(nuevas_propiedades)} propiedades nuevas.")
-        
-        try:
-            boton_siguiente = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "li.andes-pagination__button--next a")))
-            driver.execute_script("arguments[0].scrollIntoView(true);", boton_siguiente)
-            time.sleep(1)
-            driver.execute_script("arguments[0].click();", boton_siguiente)
-            pagina_actual += 1
-        except TimeoutException:
-            print("Última página alcanzada para esta URL.")
-            break
-    return todas_las_propiedades_de_url
+            driver.get(url)
+            
+            # Intenta cerrar el banner de cookies si aparece.
+            try:
+                cookie_button = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Entendido')]")))
+                cookie_button.click()
+                print("Banner de cookies cerrado.")
+            except TimeoutException:
+                print("No se encontró el banner de cookies, continuando...")
+
+            # Espera inteligente: aguarda a que el contenedor de la lista esté presente.
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.ui-search-map-list")))
+            
+            todas_las_propiedades_de_url = []
+            pagina_actual = 1
+            
+            while True:
+                print(f"--- Procesando Página {pagina_actual} ---")
+                
+                # Espera explícita a que al menos un item de la lista esté visible.
+                # Esta es una espera mucho más fiable que un sleep.
+                try:
+                    wait.until(EC.visibility_of_element_located((By.CLASS_NAME, "ui-search-map-list__item")))
+                except TimeoutException:
+                    print("Timeout esperando los items de la lista. Puede que la página no tenga resultados.")
+                    break # Salir del bucle while si no hay items
+                
+                # Pequeña pausa adicional por si acaso, pero menos crítica ahora.
+                time.sleep(1) 
+
+                propiedades_de_esta_pagina = parsear_vista_mapa(driver.page_source)
+                
+                links_ya_guardados = {p['link'] for p in todas_las_propiedades_de_url}
+                nuevas_propiedades = [p for p in propiedades_de_esta_pagina if p.get('link') and p.get('link') not in links_ya_guardados]
+                
+                if not nuevas_propiedades and pagina_actual > 1:
+                     print("No se encontraron propiedades nuevas. Asumiendo fin de la paginación.")
+                     break
+                
+                todas_las_propiedades_de_url.extend(nuevas_propiedades)
+                print(f"Extraídas {len(nuevas_propiedades)} propiedades nuevas.")
+                
+                # Lógica de paginación más robusta
+                try:
+                    # Busca el botón 'Siguiente'. Si no existe o no es clickeable, lanzará una excepción.
+                    boton_siguiente = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "li.andes-pagination__button--next a")))
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", boton_siguiente)
+                    time.sleep(0.5)
+                    boton_siguiente.click()
+                    pagina_actual += 1
+                except TimeoutException:
+                    print("Última página alcanzada (botón 'Siguiente' no encontrado o no clickeable).")
+                    break
+            
+            # Si el scraping de la URL fue exitoso (al menos una propiedad), sal del bucle de reintentos.
+            if todas_las_propiedades_de_url:
+                return todas_las_propiedades_de_url
+
+        except Exception as e:
+            print(f"Intento {attempt + 1}/{max_retries} falló para la URL. Error: {e}")
+            if attempt + 1 == max_retries:
+                print(f"Se agotaron los reintentos para la URL: {url}")
+                # Devuelve lo que haya podido recolectar hasta ahora (probablemente vacío)
+                return [] 
+            time.sleep(5) # Espera antes de reintentar
+
+    return [] # Devuelve lista vacía si todos los reintentos fallan
 
 def main():
     """Función principal que orquesta todo el proceso."""
