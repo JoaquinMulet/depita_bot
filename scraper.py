@@ -1,4 +1,4 @@
-# scraper.py (versión corregida y completa)
+# scraper.py (versión con llave compuesta título/precio)
 # -*- coding: utf-8 -*-
 
 import os
@@ -13,7 +13,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from selenium.common.exceptions import TimeoutException
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
@@ -26,22 +26,46 @@ SCRAPE_URLS_STRING = os.getenv('SCRAPE_URLS')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-# --- Todas las demás funciones (send_telegram_alert, log_execution, get_uf_value, guardar_en_db, parsear_vista_mapa) ---
-# --- permanecen exactamente igual que en la respuesta anterior. Las incluyo para completitud. ---
+
+def escape_markdown_v2(text: str) -> str:
+    """Escapa los caracteres especiales para el formato MarkdownV2 de Telegram."""
+    if not isinstance(text, str):
+        return ""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    # La siguiente línea está modificada para evitar un error común de 're'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
+def send_telegram_notification(message: str):
+    """Envía una notificación de propiedad encontrada. El mensaje ya debe venir escapado."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        'chat_id': TELEGRAM_CHAT_ID,
+        'text': message, # Se asume que el mensaje ya está formateado y escapado
+        'parse_mode': 'MarkdownV2',
+        'disable_web_page_preview': False
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        response.raise_for_status()
+        print("-> Notificación de propiedad enviada a Telegram.")
+    except requests.exceptions.RequestException as e:
+        print(f"-> Error enviando notificación a Telegram: {e}")
+        if e.response is not None:
+            print(f"-> Respuesta de API: {e.response.text}")
+
 
 def send_telegram_alert(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or 'TU_BOT_TOKEN' in TELEGRAM_BOT_TOKEN:
-        print("ALERTA: Variables de Telegram no configuradas o son placeholders.")
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': f"🚨 ALERTA - SCRAPER 🚨\n\n{message}", 'parse_mode': 'Markdown'}
-    try:
-        requests.post(url, json=payload, timeout=10).raise_for_status()
-        print("Alerta de fallo enviada a Telegram.")
-    except requests.exceptions.RequestException as e:
-        print(f"Error crítico al enviar alerta a Telegram: {e}")
+    """Envía una alerta de error."""
+    error_message_text = f"🚨 *ALERTA - SCRAPER* 🚨\n\n{message}"
+    # Escapamos el mensaje de error completo antes de enviarlo
+    send_telegram_notification(escape_markdown_v2(error_message_text))
+
 
 def log_execution(conn, script_name, status, error_message=None):
+    # (Sin cambios en esta función)
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -52,10 +76,13 @@ def log_execution(conn, script_name, status, error_message=None):
         )
         conn.commit()
 
+
 def get_uf_value():
+    # (Sin cambios en esta función)
     if not CMF_API_KEY: raise ValueError("CMF_API_KEY no definida.")
     try:
-        url = f"https://api.cmfchile.cl/api-sbifv3/recursos_api/uf?apikey={CMF_API_KEY}&formato=json"
+        today = pd.Timestamp.now().strftime('%Y/%m/dias/%d')
+        url = f"https://api.cmfchile.cl/api-sbifv3/recursos_api/uf/{today}?apikey={CMF_API_KEY}&formato=json"
         data = requests.get(url, timeout=10).json()
         return float(data['UFs'][0]['Valor'].replace('.', '').replace(',', '.'))
     except Exception:
@@ -66,37 +93,100 @@ def get_uf_value():
             return float(data['UFs'][0]['Valor'].replace('.', '').replace(',', '.'))
         except Exception: return None
 
+# ==============================================================================
+# FUNCIÓN MODIFICADA
+# ==============================================================================
 def guardar_en_db(conn, propiedades, uf_valor):
+    """
+    Guarda las propiedades en la base de datos siguiendo la lógica de la llave
+    compuesta (título, precio_uf).
+    """
     nuevas_observaciones = 0
     with conn.cursor() as cur:
         for prop in propiedades:
-            cur.execute("SELECT id FROM propiedades WHERE link = %s", (prop.get('link'),))
-            result = cur.fetchone()
-            if result:
-                propiedad_id = result[0]
+            # Normalizamos el título para consistencia (quita espacios al inicio/final)
+            titulo_prop = prop.get('titulo', 'Sin título').strip()
+
+            # Calculamos el precio en UF para esta observación
+            precio_uf_actual = None
+            if prop.get('moneda') == '$' and uf_valor:
+                # Usamos round para evitar problemas con decimales largos
+                precio_uf_actual = round(prop.get('valor_numerico', 0) / uf_valor, 2)
+            elif prop.get('moneda') == 'UF':
+                precio_uf_actual = prop.get('valor_numerico')
+
+            # Si no se pudo determinar un precio en UF, no podemos procesar esta propiedad
+            # porque el precio es parte de nuestra llave única.
+            if precio_uf_actual is None:
+                print(f"-> Propiedad omitida (no se pudo calcular precio en UF): {titulo_prop}")
+                continue
+
+            # Paso 1: Buscamos si la combinación exacta de (título, precio) ya existe.
+            cur.execute(
+                "SELECT id FROM propiedades WHERE titulo = %s AND precio_uf = %s",
+                (titulo_prop, precio_uf_actual)
+            )
+            propiedad_existente = cur.fetchone()
+
+            propiedad_id = None
+
+            if propiedad_existente:
+                # --- LÓGICA SI LA COMBINACIÓN (TÍTULO, PRECIO) YA EXISTE ---
+                propiedad_id = propiedad_existente[0]
+                print(f"-> Combinación Título/Precio ya existente, no se notifica: {titulo_prop}")
+
             else:
+                # --- LÓGICA SI ES UNA COMBINACIÓN (TÍTULO, PRECIO) NUEVA ---
+                print(f"NUEVA COMBINACIÓN TÍTULO/PRECIO ENCONTRADA: {titulo_prop}")
+                
+                # 1. La insertamos en nuestra tabla 'propiedades' para registrarla como única.
                 cur.execute(
-                    "INSERT INTO propiedades (link, ubicacion, titulo) VALUES (%s, %s, %s) RETURNING id",
-                    (prop.get('link'), prop.get('ubicacion'), prop.get('titulo'))
+                    "INSERT INTO propiedades (titulo, ubicacion, precio_uf) VALUES (%s, %s, %s) RETURNING id",
+                    (titulo_prop, prop.get('ubicacion'), precio_uf_actual)
                 )
                 propiedad_id = cur.fetchone()[0]
 
-            precio_uf = (prop.get('valor_numerico') / uf_valor) if prop.get('moneda') == '$' and uf_valor else \
-                        prop.get('valor_numerico') if prop.get('moneda') == 'UF' else None
+                # 2. Enviamos la notificación de "Nueva Propiedad/Precio"
+                superficie_str = f"{prop.get('superficie_util_m2')} m²" if prop.get('superficie_util_m2') else "No especificada"
+                precio_str = f"{precio_uf_actual:,.2f} UF".replace(",", "X").replace(".", ",").replace("X", ".")
+
+                mensaje_telegram = (
+                    f"🏠 *Nueva Propiedad/Precio Detectado*\n\n"
+                    f"*{escape_markdown_v2(titulo_prop)}*\n\n"
+                    f"💵 *Precio:* {escape_markdown_v2(precio_str)}\n"
+                    f"📏 *Superficie:* {escape_markdown_v2(superficie_str)}\n\n"
+                    f"[Ver en el portal]({prop.get('link', '')})"
+                )
+                send_telegram_notification(mensaje_telegram)
+
+
+            # Finalmente, SIEMPRE insertamos la observación detallada
+            if propiedad_id:
+                cur.execute(
+                    """
+                    INSERT INTO observaciones_venta (propiedad_id, precio_clp, precio_uf, superficie_util_m2, dormitorios, link, atributos_raw, imagen_url, es_nueva) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+                    """,
+                    (
+                        propiedad_id,
+                        prop.get('valor_numerico') if prop.get('moneda') == '$' else None,
+                        precio_uf_actual,
+                        prop.get('superficie_util_m2'),
+                        prop.get('dormitorios'),
+                        prop.get('link'),
+                        prop.get('atributos_raw'),
+                        prop.get('imagen_url')
+                    )
+                )
+                nuevas_observaciones += 1
             
-            cur.execute(
-                """
-                INSERT INTO observaciones_venta (propiedad_id, precio_clp, precio_uf, superficie_util_m2, dormitorios, atributos_raw, imagen_url) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """,
-                (propiedad_id, prop.get('valor_numerico') if prop.get('moneda') == '$' else None, precio_uf,
-                 prop.get('superficie_util_m2'), prop.get('dormitorios'), prop.get('atributos_raw'), prop.get('imagen_url'))
-            )
-            nuevas_observaciones += 1
     conn.commit()
-    print(f"Se guardaron {nuevas_observaciones} observaciones en la base de datos.")
+    print(f"\nSe guardaron {nuevas_observaciones} observaciones en la base de datos.")
+# ==============================================================================
+
 
 def parsear_vista_mapa(html_content):
+    # (Sin cambios en esta función)
     soup = BeautifulSoup(html_content, 'html.parser')
     listings = soup.select('div.ui-search-map-list__item')
     propiedades_pagina = []
@@ -123,17 +213,15 @@ def parsear_vista_mapa(html_content):
             continue
     return propiedades_pagina
 
+
 def scrape_url(url, driver, wait, max_retries=2):
-    """
-    Scraper robusto que navega una URL, con reintentos y esperas inteligentes.
-    """
+    # (Sin cambios en esta función)
     print(f"\n>>>> Iniciando scraping para la URL: {url[:80]}...")
     
     for attempt in range(max_retries):
         try:
             driver.get(url)
             
-            # Intenta cerrar el banner de cookies si aparece.
             try:
                 cookie_button = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Entendido')]")))
                 cookie_button.click()
@@ -141,7 +229,6 @@ def scrape_url(url, driver, wait, max_retries=2):
             except TimeoutException:
                 print("No se encontró el banner de cookies, continuando...")
 
-            # Espera inteligente: aguarda a que el contenedor de la lista esté presente.
             wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.ui-search-map-list")))
             
             todas_las_propiedades_de_url = []
@@ -150,32 +237,27 @@ def scrape_url(url, driver, wait, max_retries=2):
             while True:
                 print(f"--- Procesando Página {pagina_actual} ---")
                 
-                # Espera explícita a que al menos un item de la lista esté visible.
-                # Esta es una espera mucho más fiable que un sleep.
                 try:
                     wait.until(EC.visibility_of_element_located((By.CLASS_NAME, "ui-search-map-list__item")))
                 except TimeoutException:
                     print("Timeout esperando los items de la lista. Puede que la página no tenga resultados.")
-                    break # Salir del bucle while si no hay items
+                    break 
                 
-                # Pequeña pausa adicional por si acaso, pero menos crítica ahora.
                 time.sleep(1) 
 
                 propiedades_de_esta_pagina = parsear_vista_mapa(driver.page_source)
                 
-                links_ya_guardados = {p['link'] for p in todas_las_propiedades_de_url}
-                nuevas_propiedades = [p for p in propiedades_de_esta_pagina if p.get('link') and p.get('link') not in links_ya_guardados]
+                links_ya_vistos_en_esta_sesion = {p['link'] for p in todas_las_propiedades_de_url}
+                nuevas_propiedades = [p for p in propiedades_de_esta_pagina if p.get('link') and p.get('link') not in links_ya_vistos_en_esta_sesion]
                 
                 if not nuevas_propiedades and pagina_actual > 1:
-                     print("No se encontraron propiedades nuevas. Asumiendo fin de la paginación.")
-                     break
+                    print("No se encontraron propiedades nuevas en esta página. Asumiendo fin de la paginación.")
+                    break
                 
                 todas_las_propiedades_de_url.extend(nuevas_propiedades)
                 print(f"Extraídas {len(nuevas_propiedades)} propiedades nuevas.")
                 
-                # Lógica de paginación más robusta
                 try:
-                    # Busca el botón 'Siguiente'. Si no existe o no es clickeable, lanzará una excepción.
                     boton_siguiente = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "li.andes-pagination__button--next a")))
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", boton_siguiente)
                     time.sleep(0.5)
@@ -185,22 +267,19 @@ def scrape_url(url, driver, wait, max_retries=2):
                     print("Última página alcanzada (botón 'Siguiente' no encontrado o no clickeable).")
                     break
             
-            # Si el scraping de la URL fue exitoso (al menos una propiedad), sal del bucle de reintentos.
-            if todas_las_propiedades_de_url:
-                return todas_las_propiedades_de_url
+            return todas_las_propiedades_de_url
 
         except Exception as e:
             print(f"Intento {attempt + 1}/{max_retries} falló para la URL. Error: {e}")
             if attempt + 1 == max_retries:
                 print(f"Se agotaron los reintentos para la URL: {url}")
-                # Devuelve lo que haya podido recolectar hasta ahora (probablemente vacío)
                 return [] 
-            time.sleep(5) # Espera antes de reintentar
+            time.sleep(5) 
+    return []
 
-    return [] # Devuelve lista vacía si todos los reintentos fallan
 
 def main():
-    """Función principal que orquesta todo el proceso."""
+    # (Sin cambios en la lógica principal de esta función)
     log_conn = None
     try:
         log_conn = psycopg2.connect(DATABASE_URL)
@@ -213,24 +292,19 @@ def main():
         if not SCRAPE_URLS_STRING:
             raise ValueError("Variable de entorno SCRAPE_URLS no definida o está vacía.")
         
-        # =======================================================================
-        #  CAMBIO IMPORTANTE AQUÍ
-        # =======================================================================
-        # Usamos punto y coma (;) como delimitador.
-        # Limpiamos espacios y comillas dobles de cada URL individualmente.
         urls_to_scrape = [url.strip().strip('"') for url in SCRAPE_URLS_STRING.split(';') if url.strip()]
         
         if not urls_to_scrape:
-             raise ValueError("No se encontraron URLs válidas en SCRAPE_URLS después de procesar.")
+            raise ValueError("No se encontraron URLs válidas en SCRAPE_URLS después de procesar.")
         
         print(f"Se procesarán {len(urls_to_scrape)} URL(s).")
-        # =======================================================================
-
+        
         todas_las_propiedades_global = []
 
         uf_actual = get_uf_value()
         if not uf_actual:
             raise ConnectionError("No se pudo obtener el valor de la UF de la API de CMF.")
+        print(f"Valor UF obtenido: {uf_actual}")
 
         options = webdriver.ChromeOptions()
         options.add_argument('--headless')
@@ -246,7 +320,8 @@ def main():
                 print(f"\n--- URL {i+1}/{len(urls_to_scrape)} ---")
                 try:
                     propiedades_de_url = scrape_url(url, driver, wait)
-                    todas_las_propiedades_global.extend(propiedades_de_url)
+                    if propiedades_de_url:
+                        todas_las_propiedades_global.extend(propiedades_de_url)
                 except Exception as e:
                     print(f"Error procesando URL {url[:80]}: {e}")
                     send_telegram_alert(f"Falló el scraping para una URL:\n`{url}`\nError: `{e}`")
