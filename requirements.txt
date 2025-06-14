@@ -1,0 +1,7 @@
+# requirements.txt
+pandas
+selenium
+beautifulsoup4
+psycopg2-binary  # Para conectar con PostgreSQL
+requests         # Para la API de la UF y Telegram
+python-dotenv    # Para manejar variables de entorno localmente

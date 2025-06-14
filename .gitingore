@@ -1,0 +1,19 @@
+# Archivos de entorno local (contienen secretos)
+.env
+
+# Archivos de cache de Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Archivos de salida y temporales
+propiedades_*.csv
+*.log
+
+# Entornos virtuales de Python
+venv/
+.venv/
+
+# Archivos del IDE
+.vscode/
+.idea/
