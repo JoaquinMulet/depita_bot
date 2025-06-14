@@ -9,7 +9,7 @@ module.exports = {
         exec_mode: 'fork', // Necesario para que el '&&' funcione
         instances: 1,
         autorestart: false, // No queremos que se reinicie automáticamente
-        cron_restart: '0 12 * * *', // Formato cron para ejecutarlo diariamente
+        cron_restart: '0 18 * * *', // Formato cron para ejecutarlo diariamente
         watch: false,
       },
       {
@@ -19,7 +19,7 @@ module.exports = {
         exec_mode: 'fork',
         instances: 1,
         autorestart: false,
-        cron_restart: '0 14 * * *', // Se ejecuta 2 horas después del pipeline principal
+        cron_restart: '0 20 * * *', // Se ejecuta 2 horas después del pipeline principal
         watch: false,
       },
     ],
