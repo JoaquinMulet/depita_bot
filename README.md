@@ -1,73 +1,59 @@
 # Sistema de Monitoreo de Propiedades Inmobiliarias
 
-Este proyecto es una aplicación de recolección y análisis de datos diseñada para monitorear el mercado inmobiliario en portales web como Mercado Libre. La aplicación está construida siguiendo los principios de diseño de sistemas de datos intensivos, priorizando la fiabilidad, escalabilidad y mantenibilidad.
+Este proyecto es una aplicación de recolección y análisis de datos diseñada para monitorear el mercado inmobiliario. Construida con principios de fiabilidad y mantenibilidad, utiliza un flujo de datos desacoplado para garantizar la integridad y facilitar la evolución del sistema.
 
-La arquitectura se basa en un modelo de flujo de datos (dataflow) que separa claramente las responsabilidades:
+### Arquitectura
 
-1.  **Ingesta (Scraper):** Un script robusto basado en Selenium extrae periódicamente los datos de las propiedades en venta desde una o más URLs configuradas.
-2.  **Almacenamiento (Base de Datos):** Utiliza una base de datos PostgreSQL como **Sistema de Registro (Source of Truth)**. Todas las observaciones se guardan como eventos inmutables, creando un historial completo y auditable.
-3.  **Análisis (Analyzer):** Un consumidor procesa las nuevas observaciones, calcula métricas derivadas (como el valor en UF por metro cuadrado) y las almacena para análisis histórico.
-4.  **Notificaciones (Notifier):** El analizador detecta propiedades genuinamente nuevas y envía notificaciones en tiempo real a un canal de Telegram.
-5.  **Monitoreo (Monitor):** Un script de vigilancia se ejecuta periódicamente para asegurar que el sistema está funcionando correctamente y alerta sobre posibles fallos en las ejecuciones.
+-   **Ingesta (Scraper):** `scraper.py` utiliza Selenium para extraer datos de múltiples URLs configuradas.
+-   **Almacenamiento (PostgreSQL):** La base de datos actúa como un log de eventos inmutables, nuestra fuente de la verdad.
+-   **Procesamiento (Analyzer):** `analyzer.py` consume los nuevos datos, calcula métricas (UF/m²) y envía notificaciones a Telegram sobre nuevas propiedades.
+-   **Orquestación (PM2):** Se utiliza PM2, un gestor de procesos de producción para Node.js (pero que funciona excelentemente con Python), para programar y ejecutar los scripts como tareas cron dentro del contenedor Docker.
+-   **Monitoreo (Monitor):** `monitor.py` verifica periódicamente la salud de las ejecuciones pasadas y alerta sobre fallos.
 
-Este diseño "desempaquetado" permite que cada componente evolucione de forma independiente y garantiza la integridad de los datos a lo largo de todo el pipeline.
+---
 
 ## Despliegue en Railway
 
-Esta aplicación está diseñada para ser desplegada fácilmente en [Railway.app](https://railway.app/).
+El despliegue está optimizado para Railway y utiliza un `Dockerfile` para crear un entorno autocontenido.
 
 ### Prerrequisitos
 
 *   Una cuenta de GitHub.
 *   Una cuenta de Railway.
-*   Un bot de Telegram y el ID del chat donde se enviarán las notificaciones.
-*   Una API Key del servicio de Indicadores Financieros de CMF Chile para obtener el valor de la UF. Puedes registrarte en [api.cmfchile.cl](https://api.cmfchile.cl/).
+*   Un bot de Telegram y el ID de chat/canal.
+*   Una API Key de la CMF Chile para el valor de la UF.
 
 ### Pasos de Despliegue
 
-1.  **Forkear el Repositorio:** Haz un "fork" de este repositorio en tu propia cuenta de GitHub.
+1.  **Forkear y Crear Proyecto:**
+    *   Haz un "fork" de este repositorio.
+    *   En Railway, crea un `New Project` y selecciona `Deploy from GitHub repo`, eligiendo tu fork. Railway usará el `Dockerfile` para construir el servicio.
 
-2.  **Crear Proyecto en Railway:**
-    *   Inicia sesión en tu cuenta de Railway y haz clic en `New Project`.
-    *   Selecciona `Deploy from GitHub repo` y elige el repositorio que acabas de forkear.
-    *   Railway detectará el `Dockerfile` y comenzará a construir la imagen de tu aplicación.
+2.  **Añadir Base de Datos PostgreSQL:**
+    *   En tu proyecto de Railway, haz clic en `+ New` -> `Database` -> `PostgreSQL`.
+    *   Railway creará la base de datos y **automáticamente inyectará la variable `DATABASE_URL` en tu servicio de aplicación.**
 
-3.  **Añadir Base de Datos PostgreSQL:**
-    *   Dentro de tu nuevo proyecto en Railway, haz clic en el botón `+ New`.
-    *   Selecciona `Database` y luego `PostgreSQL`.
-    *   Railway creará una base de datos y automáticamente añadirá la variable de entorno `DATABASE_URL` a tu servicio de aplicación. ¡No necesitas configurarla manualmente!
+3.  **Configurar Variables de Entorno:**
+    *   Ve a tu servicio de aplicación y abre la pestaña `Variables`.
+    *   Añade las siguientes variables. **No necesitas añadir `DATABASE_URL` manualmente.**
 
-4.  **Configurar Variables de Entorno:**
-    *   Ve a tu servicio de aplicación (no a la base de datos) y haz clic en la pestaña `Variables`.
-    *   Añade las siguientes variables de entorno con tus propios valores (los secretos se guardarán de forma segura):
+        | Variable             | Descripción                                                                                                 |
+        | -------------------- | ----------------------------------------------------------------------------------------------------------- |
+        | `TELEGRAM_BOT_TOKEN` | El token de tu bot de Telegram.                                                                             |
+        | `TELEGRAM_CHAT_ID`   | El ID numérico de tu chat, canal o grupo de Telegram.                                                       |
+        | `CMF_API_KEY`        | Tu clave de API del portal de CMF Chile.                                                                    |
+        | `SCRAPE_URLS`        | Lista de URLs de Mercado Libre a scrapear, **separadas por comas, sin espacios**.                             |
 
-        | Variable             | Descripción                                                                                              | Ejemplo                                                                                                                                                                                                                                                                                                           |
-        | -------------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-        | `TELEGRAM_BOT_TOKEN` | El token de tu bot de Telegram, obtenido de @BotFather.                                                  | `1234567890:AAbbCCddEEffGGhhIIjjKKllMMnnOOpp`                                                                                                                                                                                                                                                                      |
-        | `TELEGRAM_CHAT_ID`   | El ID numérico del chat, canal o grupo de Telegram donde se recibirán las alertas.                        | `-1001234567890` (para canales/supergrupos) o `987654321` (para chats privados).                                                                                                                                                                                                                                    |
-        | `CMF_API_KEY`        | Tu clave de API personal del portal de CMF Chile.                                                        | `a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4`                                                                                                                                                                                                                                                                                 |
-        | `SCRAPE_URLS`        | Una lista de URLs de Mercado Libre a scrapear, **separadas por comas y sin espacios entre ellas**.         | `https://listado.mercadolibre.cl/inmuebles/departamentos/venta/_DisplayType_M,https://listado.mercadolibre.cl/inmuebles/casas/arriendo/_DisplayType_M`                                                                                                                                                                     |
+4.  **Inicializar Esquema de la Base de Datos:**
+    *   Ve a tu servicio PostgreSQL en Railway, abre la pestaña `Data`.
+    *   Copia el contenido del archivo `schema.sql` del repositorio.
+    *   Pega el SQL en la ventana de consulta y ejecútalo para crear todas las tablas necesarias.
 
-5.  **Inicializar la Base de Datos:**
-    *   Ve a tu servicio de PostgreSQL en Railway y haz clic en la pestaña `Data`.
-    *   Copia y pega el contenido del archivo `schema.sql` (que se encuentra en el repositorio) en la ventana de consulta y ejecútalo. Esto creará las tablas necesarias (`propiedades`, `observaciones_venta`, `metricas_historicas`, `log_ejecucion`).
+¡Listo! El `Dockerfile` se encarga de iniciar PM2, que a su vez leerá `ecosystem.config.js` y programará tus scripts para que se ejecuten en los horarios definidos. Puedes monitorear la salida de los scripts en los logs de despliegue de tu servicio en Railway.
 
-6.  **Configurar Tareas Programadas (Cron Jobs):**
-    *   Vuelve a tu servicio de aplicación y ve a la pestaña `Settings`.
-    *   En la sección `Deploy`, busca el `Start Command`. Déjalo en blanco o pon `sleep infinity`. Esto es importante para que el contenedor se mantenga vivo para ejecutar los cron jobs.
-    *   Railway debería detectar el archivo `railway.json` y configurar los cron jobs automáticamente. Si no, puedes definirlos manualmente en la UI de Railway. El `railway.json` define:
-        *   **Trabajo Principal (diario a las 12:00 UTC):** `python scraper.py && python analyzer.py`
-        *   **Trabajo de Monitoreo (diario a las 14:00 UTC):** `python monitor.py`
+### Aclaración sobre la Conexión a la Base de Datos
 
-¡Eso es todo! Tu sistema ahora está desplegado y se ejecutará automáticamente según el horario definido. Puedes ver los logs de cada ejecución en la pestaña `Deployments` de tu servicio de aplicación en Railway.
+La variable `DATABASE_URL` es una cadena de conexión estándar con el formato:
+`postgresql://<usuario>:<contraseña>@<host>:<puerto>/<nombre_db>`
 
-## Desarrollo Local
-
-Para ejecutar y probar la aplicación en tu máquina local:
-
-1.  Asegúrate de tener Python 3.10+ y Google Chrome instalado.
-2.  Clona el repositorio: `git clone <url-de-tu-repo>`
-3.  Crea un entorno virtual: `python -m venv venv` y actívalo (`source venv/bin/activate` en Linux/macOS o `venv\Scripts\activate` en Windows).
-4.  Instala las dependencias: `pip install -r requirements.txt`.
-5.  Crea un archivo `.env` a partir de `.env.example` y rellénalo con tus credenciales y URLs de prueba.
-6.  Ejecuta los scripts manualmente: `python scraper.py`, luego `python analyzer.py`.
+Nuestra aplicación utiliza la librería `psycopg2`, que entiende este formato directamente. Extrae todas las credenciales necesarias (usuario, contraseña, host, etc.) de esta única variable. Por lo tanto, **es la única variable que necesitas para la conexión a la base de datos**, lo cual es una práctica segura y estándar.
