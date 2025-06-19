@@ -1,18 +1,39 @@
 # requirements.txt
 
 # Para peticiones HTTP y Telegram
-requests
+requests>=2.31.0
 
 # Para interactuar con la base de datos PostgreSQL
-psycopg2-binary
+psycopg2-binary>=2.9.9
 
 # Para análisis de datos
-pandas
+pandas>=2.1.0
+numpy>=1.24.0  # Dependencia de pandas
 
 # Para leer el archivo .env en desarrollo local
-python-dotenv
+python-dotenv>=1.0.0
 
 # Para el web scraping con navegador
-selenium
+selenium>=4.10.0
+webdriver-manager>=4.0.0
 
-webdriver-manager
+# Para parseo de HTML
+beautifulsoup4>=4.12.0
+lxml>=4.9.0  # Parser alternativo más rápido para BeautifulSoup
+
+# Para el cliente PostgreSQL
+psycopg2>=2.9.9  # Alternativa a psycopg2-binary para entornos de producción
+
+# Para manejo de fechas y zonas horarias
+python-dateutil>=2.8.2  # Dependencia de pandas
+pytz>=2023.3  # Para manejo de zonas horarias
+
+# Para serialización de datos
+python-json-logger>=2.0.7  # Para logs estructurados
+
+# Para validación de datos
+pydantic>=2.0.0  # Para validación de datos y configuración
+
+# Para pruebas unitarias
+pytest>=7.4.0
+pytest-cov>=4.1.0
