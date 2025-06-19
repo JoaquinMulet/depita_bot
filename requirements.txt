@@ -1,7 +1,16 @@
 # requirements.txt
+
+# Para peticiones HTTP y Telegram
+requests
+
+# Para interactuar con la base de datos PostgreSQL
+psycopg2-binary
+
+# Para análisis de datos
 pandas
+
+# Para leer el archivo .env en desarrollo local
+python-dotenv
+
+# Para el web scraping con navegador
 selenium
-beautifulsoup4
-psycopg2-binary  # Para conectar con PostgreSQL
-requests         # Para la API de la UF y Telegram
-python-dotenv    # Para manejar variables de entorno localmente
