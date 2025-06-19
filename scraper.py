@@ -1,4 +1,4 @@
-# scraper.py (versión con llave compuesta título/precio)
+# scraper.py (versión con llave compuesta título/precio y webdriver-manager)
 # -*- coding: utf-8 -*-
 
 import os
@@ -16,6 +16,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+
+# NUEVO: Importaciones para gestionar el driver automáticamente
+from selenium.webdriver.chrome.service import Service as ChromeService
+from webdriver_manager.chrome import ChromeDriverManager
 
 load_dotenv()
 
@@ -93,35 +97,23 @@ def get_uf_value():
             return float(data['UFs'][0]['Valor'].replace('.', '').replace(',', '.'))
         except Exception: return None
 
-# ==============================================================================
-# FUNCIÓN MODIFICADA
-# ==============================================================================
+
 def guardar_en_db(conn, propiedades, uf_valor):
-    """
-    Guarda las propiedades en la base de datos siguiendo la lógica de la llave
-    compuesta (título, precio_uf).
-    """
+    # (Sin cambios en esta función)
     nuevas_observaciones = 0
     with conn.cursor() as cur:
         for prop in propiedades:
-            # Normalizamos el título para consistencia (quita espacios al inicio/final)
             titulo_prop = prop.get('titulo', 'Sin título').strip()
-
-            # Calculamos el precio en UF para esta observación
             precio_uf_actual = None
             if prop.get('moneda') == '$' and uf_valor:
-                # Usamos round para evitar problemas con decimales largos
                 precio_uf_actual = round(prop.get('valor_numerico', 0) / uf_valor, 2)
             elif prop.get('moneda') == 'UF':
                 precio_uf_actual = prop.get('valor_numerico')
 
-            # Si no se pudo determinar un precio en UF, no podemos procesar esta propiedad
-            # porque el precio es parte de nuestra llave única.
             if precio_uf_actual is None:
                 print(f"-> Propiedad omitida (no se pudo calcular precio en UF): {titulo_prop}")
                 continue
 
-            # Paso 1: Buscamos si la combinación exacta de (título, precio) ya existe.
             cur.execute(
                 "SELECT id FROM propiedades WHERE titulo = %s AND precio_uf = %s",
                 (titulo_prop, precio_uf_actual)
@@ -131,25 +123,17 @@ def guardar_en_db(conn, propiedades, uf_valor):
             propiedad_id = None
 
             if propiedad_existente:
-                # --- LÓGICA SI LA COMBINACIÓN (TÍTULO, PRECIO) YA EXISTE ---
                 propiedad_id = propiedad_existente[0]
                 print(f"-> Combinación Título/Precio ya existente, no se notifica: {titulo_prop}")
-
             else:
-                # --- LÓGICA SI ES UNA COMBINACIÓN (TÍTULO, PRECIO) NUEVA ---
                 print(f"NUEVA COMBINACIÓN TÍTULO/PRECIO ENCONTRADA: {titulo_prop}")
-                
-                # 1. La insertamos en nuestra tabla 'propiedades' para registrarla como única.
                 cur.execute(
                     "INSERT INTO propiedades (titulo, ubicacion, precio_uf) VALUES (%s, %s, %s) RETURNING id",
                     (titulo_prop, prop.get('ubicacion'), precio_uf_actual)
                 )
                 propiedad_id = cur.fetchone()[0]
-
-                # 2. Enviamos la notificación de "Nueva Propiedad/Precio"
                 superficie_str = f"{prop.get('superficie_util_m2')} m²" if prop.get('superficie_util_m2') else "No especificada"
                 precio_str = f"{precio_uf_actual:,.2f} UF".replace(",", "X").replace(".", ",").replace("X", ".")
-
                 mensaje_telegram = (
                     f"🏠 *Nueva Propiedad/Precio Detectado*\n\n"
                     f"*{escape_markdown_v2(titulo_prop)}*\n\n"
@@ -159,8 +143,6 @@ def guardar_en_db(conn, propiedades, uf_valor):
                 )
                 send_telegram_notification(mensaje_telegram)
 
-
-            # Finalmente, SIEMPRE insertamos la observación detallada
             if propiedad_id:
                 cur.execute(
                     """
@@ -182,7 +164,6 @@ def guardar_en_db(conn, propiedades, uf_valor):
             
     conn.commit()
     print(f"\nSe guardaron {nuevas_observaciones} observaciones en la base de datos.")
-# ==============================================================================
 
 
 def parsear_vista_mapa(html_content):
@@ -279,7 +260,7 @@ def scrape_url(url, driver, wait, max_retries=2):
 
 
 def main():
-    # (Sin cambios en la lógica principal de esta función)
+    # (La lógica principal se mantiene, solo cambia la inicialización del driver)
     log_conn = None
     try:
         log_conn = psycopg2.connect(DATABASE_URL)
@@ -312,7 +293,13 @@ def main():
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument("window-size=1920,1080")
         
-        driver = webdriver.Chrome(options=options)
+        # NUEVO: Configuración de Selenium con webdriver-manager
+        # Esto descarga y gestiona automáticamente el chromedriver correcto.
+        print("Configurando el driver de Selenium con webdriver-manager...")
+        service = ChromeService(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+        print("Driver configurado exitosamente.")
+
         wait = WebDriverWait(driver, 20)
         
         try:
